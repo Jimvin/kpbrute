@@ -1,0 +1,225 @@
+#!/opt/local/bin/perl
+
+###########################################################################
+#
+# kp_brute.pl -  KeePass brute forcer
+#
+# kp_brute.pl --kdb=<keepass_db> --dict=<dictionary>
+#
+# Tries all of the passwords in a dictionary file against a KeePass
+# database to see if they unlock the goods.
+#
+# Based on kpcli by Lester Hightower. Thank you!
+#
+###########################################################################
+
+use strict;
+use FileHandle;
+use Getopt::Long;
+use File::Basename;
+use Data::Dumper qw(Dumper);
+use Crypt::Rijndael;    # non-core, libcrypt-rijndael-perl on Ubuntu
+use Sort::Naturally;    # non-core, libsort-naturally-perl on Ubuntu
+use File::KeePass 0.03; # non-core, >=v0.03 needed due critical bug fixes
+$|=1;
+
+my $DEBUG=0;
+
+my $APP_NAME = basename($0);
+$APP_NAME =~ s/\.pl$//;
+
+my $VERSION = "0.9";
+
+my $opts=MyGetOpts();  # Will only return with options we think we can use
+
+# Seed our state global variable
+our $state={
+	'appname' => $APP_NAME,
+	'kdb_has_changed' => 0,
+	};
+
+
+if (!length($opts->{dict}) || !length($opts->{kdb})) {
+  &usage;
+}
+
+# If given --dict=, read passwords from that file
+my @passwords;
+open IN, "<$opts->{dict}" or die "Cannot open dictionary file $opts->{dict}: $?\n";;
+while(<IN>) {
+  chomp;
+  push @passwords,$_;
+}
+close IN;
+
+# If given --kdb=, open that file
+my $err = open_kdb($opts->{kdb}); # Sets $state->{'kdb'}
+if (length($err)) {
+  print "Error opening file: $err\n";
+  exit 1;
+}
+
+
+sub usage {
+  print "Usage: kpbrute --kdb=<keepass_db> --dict=<dictionary>\n";
+  exit 1;
+}
+
+exit;
+
+############################################################################
+############################################################################
+############################################################################
+
+sub open_kdb($) {
+  my $file=shift @_;
+  our $state;
+
+  # Make sure the file exists and is readable
+  if (! -f $file) {
+    return "File does not exist: $file";
+  }
+  if (! -r $file) {
+    return "File is not readable: $file";
+  }
+
+  $state->{kdb} = File::KeePass->new;
+  foreach my $pass (@passwords) {
+    if (! eval { $state->{kdb}->load_db($file, $pass) }) {
+      print "Password $pass does not work\n";
+    } else {
+      print "Password $pass works!\n";
+      exit(0);
+    }
+  }
+  exit(1);
+
+}
+
+sub MyGetOpts {
+  my %opts=();
+  my $result = &GetOptions(\%opts, "kdb=s", "help", "h", "dict=s");
+
+  # If the user asked for help or GetOptions complained, give help and exit
+  if ($opts{help} || $opts{h} || (! int($result))) {
+    print GetUsageMessage();
+    exit;
+  }
+
+  my @errs=();
+  if ((length($opts{kdb}) && (! -e $opts{kdb}))) {
+    push @errs, "for option --kdb=<file.kbd>, the file must exist.";
+  }
+
+  if ((length($opts{dict}) && (! -e $opts{dict}))) {
+    push @errs, "for option --dict=<dictionary>, the file must exist.";
+  }
+
+  if (scalar(@errs)) {
+    warn "There were errors:\n" .
+	"  " . join("\n  ", @errs) . "\n\n";
+    die &GetUsageMessage();
+  }
+
+  return \%opts;
+}
+
+sub GetUsageMessage {
+  my $t="Usage: $APP_NAME [--kdb=<file.kdb>]\n" .
+  "\n" .
+  "    --help\tThis message.\n" .
+  "    --kdb\tKeePass 1.x database file to open (must exist)\n" .
+  "    --dict\tDictionary file to open (must exist)\n" .
+  "\n" ;
+  return $t;
+}
+
+
+########################################################################
+# Rijndael encrypt/decrypt routines - borrowed from File::KeePass ######
+########################################################################
+sub decrypt_rijndael_cbc {
+    my ($buffer, $key, $enc_iv) = @_;
+    my $cipher = Crypt::Rijndael->new($key, Crypt::Rijndael::MODE_CBC());
+    $cipher->set_iv($enc_iv);
+    $buffer = $cipher->decrypt($buffer);
+    my $extra = ord(substr $buffer, -1, 1);
+    substr($buffer, length($buffer) - $extra, $extra, '');
+    return $buffer;
+}
+sub encrypt_rijndael_cbc {
+    my ($buffer, $key, $enc_iv) = @_;
+    my $cipher = Crypt::Rijndael->new($key, Crypt::Rijndael::MODE_CBC());
+    $cipher->set_iv($enc_iv);
+    my $extra = (16 - length($buffer) % 16) || 16; # pad so we can trim
+    $buffer .= chr($extra) for 1 .. $extra;
+    return $cipher->encrypt($buffer);
+}
+
+########################################################################
+# POD ##################################################################
+########################################################################
+
+=head1 NAME
+
+kpbrute - A dictionary brute force tool for KeePass 1.x database files.
+
+
+=head1 DESCRIPTION
+
+A brute force tool to attempt to recover KeePass 1.x  passphrases.
+This tool performs a simple dictionary attack on KeePass 1.x files.
+
+=head1 PREREQUISITES
+
+This script requires these non-core modules:
+
+C<Crypt::Rijndael> - "apt-get install libcrypt-rijndael-perl" on Ubuntu
+
+C<Term::ReadKey>   - "apt-get install libterm-readkey-perl" on Ubuntu
+
+C<Sort::Naturally> - "apt-get install libsort-naturally-perl" on Ubuntu
+
+C<Term::ShellUI>   - not packaged on Ubuntu
+
+C<File::KeePass>   - not packaged on Ubuntu
+
+Both of the "not packaged" modules above build very cleanly with the
+dh-make-perl tool on Debian and Ubuntu.
+
+=head1 BUGS
+
+No known bugs at this time
+
+=head1 AUTHOR
+
+Jim Halfpenny <jim.halfpenny at gmail dot com>
+Based on kpcli by Lester Hightower <hightowe at cpan dot org>
+
+=head1 LICENSE
+
+This module may be distributed under the same terms as Perl itself.
+
+=head1 CHANGELOG
+
+ 2011-Jul-20 - v0.1 - Initial release.
+ 2013-Sep-27 - v0.2 - POD tidy up and first upload to github
+
+=head1 TODO ITEMS
+
+ Cleanup the script argument handling
+ 
+ Add a default help message
+
+=head1 OPERATING SYSTEMS AND SCRIPT CATEGORIZATION
+
+=pod OSNAMES
+
+Unix-like (written and tested on Mac OS X 10.6.8).
+
+=pod SCRIPT CATEGORIES
+
+UNIX/System_administration
+
+=cut
+
